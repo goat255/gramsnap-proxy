@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 """
-GramSnap signing proxy — FastAPI service
-Accepts: POST /instagram/userInfo   {"username": "..."}
-         POST /instagram/postsV2    {"username": "...", "maxId": ""}
-Returns: GramSnap API response JSON
+Instagram provider proxy — FastAPI service
+GramSnap (P2):      POST /instagram/userInfo      {"username": "..."}
+                    POST /instagram/postsV2       {"username": "...", "maxId": ""}
+SSSInstagram (P3):  POST /sssinstagram/userInfo   {"username": "..."}
+                    POST /sssinstagram/postsV2    {"username": "...", "maxId": ""}
 """
-import hashlib, json, os, time, urllib.request
+import hashlib, hmac, json, os, time, urllib.request
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import curl_cffi.requests as cf_requests
 
+# GramSnap config
 SECRET_SUFFIX = os.environ["GRAMSNAP_SECRET_SUFFIX"]
 _TS = int(os.environ.get("GRAMSNAP_TS", "1772697360946"))
 FLARESOLVER_URL = os.environ.get("FLARESOLVER_URL", "https://flaresolver.4stepai.cloud/v1")
 GRAMSNAP_BASE = "https://gramsnap.com"
+
+# SSSInstagram config
+SSS_HMAC_KEY = bytes.fromhex(os.environ.get("SSS_HMAC_KEY", "df73cf7be343f9701ce0f2ae809f9bd752e82fbb7017f463141664465b8ce8e0"))
+SSS_TS = int(os.environ.get("SSS_TS", "1770970183770"))
+SSS_BASE = "https://api-wh.sssinstagram.com"
 
 app = FastAPI()
 
@@ -81,6 +88,37 @@ def user_info(req: UserInfoReq):
 def posts_v2(req: PostsReq):
     return gramsnap_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
 
+def sss_post(path, body_dict):
+    sorted_body = sort_keys(body_dict)
+    json_str = json.dumps(sorted_body, separators=(",", ":"))
+    ts = int(time.time() * 1000)
+    sig = hmac.new(SSS_HMAC_KEY, (json_str + str(ts)).encode(), hashlib.sha256).hexdigest()
+    payload = {**sorted_body, "ts": ts, "_ts": SSS_TS, "_tsc": 0, "_sv": 2, "_s": sig}
+    resp = cf_requests.post(
+        f"{SSS_BASE}{path}",
+        json=payload,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://sssinstagram.com",
+            "Referer": "https://sssinstagram.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        },
+        impersonate="chrome110",
+        timeout=30,
+    )
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=f"SSSInstagram returned {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
+@app.post("/sssinstagram/userInfo")
+def sss_user_info(req: UserInfoReq):
+    return sss_post("/api/v1/instagram/userInfo", {"username": req.username})
+
+@app.post("/sssinstagram/postsV2")
+def sss_posts_v2(req: PostsReq):
+    return sss_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "_ts": _TS, "cookies_cached": _cookie_cache["cookies"] is not None}
+    return {"status": "ok", "gramsnap_ts": _TS, "sss_ts": SSS_TS, "cookies_cached": _cookie_cache["cookies"] is not None}
