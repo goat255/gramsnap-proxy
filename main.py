@@ -32,26 +32,33 @@ SSS_BASE = "https://api-wh.sssinstagram.com"
 
 app = FastAPI()
 
-# Cache cookies — FlareSolverr is slow; refresh every 25 min (cf_clearance lasts ~30 min)
-_cookie_cache: dict = {"cookies": None, "ua": None, "fetched_at": 0}
+# Cookie caches — FlareSolverr is slow; refresh every 25 min (cf_clearance lasts ~30 min)
+_gramsnap_cookies: dict = {"cookies": None, "ua": None, "fetched_at": 0}
+_fastdl_cookies: dict = {"cookies": None, "ua": None, "fetched_at": 0}
 
-def get_cookies():
+def _fetch_cf_cookies(url, cache):
     now = time.time()
-    if _cookie_cache["cookies"] and (now - _cookie_cache["fetched_at"]) < 1500:
-        return _cookie_cache["cookies"], _cookie_cache["ua"]
-    req_body = json.dumps({"cmd": "request.get", "url": f"{GRAMSNAP_BASE}/en/", "maxTimeout": 60000}).encode()
+    if cache["cookies"] and (now - cache["fetched_at"]) < 1500:
+        return cache["cookies"], cache["ua"]
+    req_body = json.dumps({"cmd": "request.get", "url": url, "maxTimeout": 60000}).encode()
     r = urllib.request.Request(FLARESOLVER_URL, data=req_body, headers={"Content-Type": "application/json"})
     flare = json.loads(urllib.request.urlopen(r, timeout=90).read())
     cookies = {c["name"]: c["value"] for c in flare["solution"]["cookies"]}
     ua = flare["solution"]["userAgent"]
-    _cookie_cache.update({"cookies": cookies, "ua": ua, "fetched_at": now})
+    cache.update({"cookies": cookies, "ua": ua, "fetched_at": now})
     return cookies, ua
+
+def get_gramsnap_cookies():
+    return _fetch_cf_cookies(f"{GRAMSNAP_BASE}/en/", _gramsnap_cookies)
+
+def get_fastdl_cookies():
+    return _fetch_cf_cookies(f"{FASTDL_BASE}/", _fastdl_cookies)
 
 def sort_keys(obj):
     return dict(sorted(obj.items()))
 
 def gramsnap_post(path, body_dict):
-    cookies, ua = get_cookies()
+    cookies, ua = get_gramsnap_cookies()
     ts = int(time.time() * 1000)
     msg = json.dumps(sort_keys(body_dict), separators=(",", ":")) + str(ts) + SECRET_SUFFIX
     sig = hashlib.sha256(msg.encode()).hexdigest()
@@ -73,8 +80,7 @@ def gramsnap_post(path, body_dict):
         timeout=30,
     )
     if not resp.ok:
-        # Invalidate cache so next request gets fresh cookies
-        _cookie_cache["fetched_at"] = 0
+        _gramsnap_cookies["fetched_at"] = 0
         raise HTTPException(status_code=resp.status_code, detail=f"GramSnap returned {resp.status_code}: {resp.text[:200]}")
     return resp.json()
 
@@ -88,6 +94,7 @@ class PostsReq(BaseModel):
 
 
 def fastdl_post(path, body_dict):
+    cookies, ua = get_fastdl_cookies()
     sorted_body = sort_keys(body_dict)
     json_str = json.dumps(sorted_body, separators=(",", ":"))
     ts = int(time.time() * 1000)
@@ -96,16 +103,18 @@ def fastdl_post(path, body_dict):
     resp = cf_requests.post(
         f"{FASTDL_BASE}{path}",
         json=payload,
+        cookies=cookies,
         headers={
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://fastdl.app",
             "Referer": "https://fastdl.app/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "User-Agent": ua,
         },
         impersonate="chrome110",
         timeout=30,
     )
     if not resp.ok:
+        _fastdl_cookies["fetched_at"] = 0
         raise HTTPException(status_code=resp.status_code, detail=f"FastDL returned {resp.status_code}: {resp.text[:200]}")
     return resp.json()
 
@@ -160,4 +169,4 @@ def sss_posts_v2(req: PostsReq):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "fastdl_ts": FASTDL_TS, "gramsnap_ts": _TS, "sss_ts": SSS_TS, "cookies_cached": _cookie_cache["cookies"] is not None}
+    return {"status": "ok", "fastdl_ts": FASTDL_TS, "gramsnap_ts": _TS, "sss_ts": SSS_TS, "fastdl_cookies": _fastdl_cookies["cookies"] is not None, "gramsnap_cookies": _gramsnap_cookies["cookies"] is not None}
