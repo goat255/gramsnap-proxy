@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Instagram provider proxy — FastAPI service
-GramSnap (P2):      POST /instagram/userInfo      {"username": "..."}
-                    POST /instagram/postsV2       {"username": "...", "maxId": ""}
-SSSInstagram (P3):  POST /sssinstagram/userInfo   {"username": "..."}
-                    POST /sssinstagram/postsV2    {"username": "...", "maxId": ""}
+FastDL (P1):        POST /fastdl/userInfo          {"username": "..."}
+                    POST /fastdl/postsV2           {"username": "...", "maxId": ""}
+GramSnap (P2):      POST /instagram/userInfo       {"username": "..."}
+                    POST /instagram/postsV2        {"username": "...", "maxId": ""}
+SSSInstagram (P3):  POST /sssinstagram/userInfo    {"username": "..."}
+                    POST /sssinstagram/postsV2     {"username": "...", "maxId": ""}
 """
 import hashlib, hmac, json, os, time, urllib.request
 from fastapi import FastAPI, HTTPException
@@ -17,6 +19,11 @@ SECRET_SUFFIX = os.environ["GRAMSNAP_SECRET_SUFFIX"]
 _TS = int(os.environ.get("GRAMSNAP_TS", "1772697360946"))
 FLARESOLVER_URL = os.environ.get("FLARESOLVER_URL", "https://flaresolver.4stepai.cloud/v1")
 GRAMSNAP_BASE = "https://gramsnap.com"
+
+# FastDL config
+FASTDL_HMAC_KEY = bytes.fromhex(os.environ.get("FASTDL_HMAC_KEY", "792525efde6d921d6055a5d62dcebd39c8b5364e99fa87c5adf0e89391266d9c"))
+FASTDL_TS = int(os.environ.get("FASTDL_TS", "1773148641059"))
+FASTDL_BASE = "https://api-wh.fastdl.app"
 
 # SSSInstagram config
 SSS_HMAC_KEY = bytes.fromhex(os.environ.get("SSS_HMAC_KEY", "df73cf7be343f9701ce0f2ae809f9bd752e82fbb7017f463141664465b8ce8e0"))
@@ -80,6 +87,38 @@ class PostsReq(BaseModel):
     maxId: Optional[str] = ""
 
 
+def fastdl_post(path, body_dict):
+    sorted_body = sort_keys(body_dict)
+    json_str = json.dumps(sorted_body, separators=(",", ":"))
+    ts = int(time.time() * 1000)
+    sig = hmac.new(FASTDL_HMAC_KEY, (json_str + str(ts)).encode(), hashlib.sha256).hexdigest()
+    payload = {**sorted_body, "ts": ts, "_ts": FASTDL_TS, "_tsc": 0, "_sv": 2, "_s": sig}
+    resp = cf_requests.post(
+        f"{FASTDL_BASE}{path}",
+        json=payload,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://fastdl.app",
+            "Referer": "https://fastdl.app/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        },
+        impersonate="chrome110",
+        timeout=30,
+    )
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=f"FastDL returned {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
+@app.post("/fastdl/userInfo")
+def fastdl_user_info(req: UserInfoReq):
+    return fastdl_post("/api/v1/instagram/userInfo", {"username": req.username})
+
+@app.post("/fastdl/postsV2")
+def fastdl_posts_v2(req: PostsReq):
+    return fastdl_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
+
+
 @app.post("/instagram/userInfo")
 def user_info(req: UserInfoReq):
     return gramsnap_post("/api/v1/instagram/userInfo", {"username": req.username})
@@ -121,4 +160,4 @@ def sss_posts_v2(req: PostsReq):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "gramsnap_ts": _TS, "sss_ts": SSS_TS, "cookies_cached": _cookie_cache["cookies"] is not None}
+    return {"status": "ok", "fastdl_ts": FASTDL_TS, "gramsnap_ts": _TS, "sss_ts": SSS_TS, "cookies_cached": _cookie_cache["cookies"] is not None}
