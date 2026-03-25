@@ -3,12 +3,13 @@
 Instagram provider proxy — FastAPI service
 FastDL (P1):        POST /fastdl/userInfo          {"username": "..."}
                     POST /fastdl/postsV2           {"username": "...", "maxId": ""}
+                    POST /fastdl/convert           {"url": "..."} — savefrom video/reel download
 GramSnap (P2):      POST /instagram/userInfo       {"username": "..."}
                     POST /instagram/postsV2        {"username": "...", "maxId": ""}
 SSSInstagram (P3):  POST /sssinstagram/userInfo    {"username": "..."}
                     POST /sssinstagram/postsV2     {"username": "...", "maxId": ""}
 """
-import hashlib, hmac, json, os, time, urllib.request
+import hashlib, hmac, json, os, time, urllib.parse, urllib.request
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -119,6 +120,40 @@ def fastdl_post(path, body_dict):
     return resp.json()
 
 
+class ConvertReq(BaseModel):
+    url: str
+
+
+def fastdl_savefrom(sf_url: str):
+    """Call FastDL's savefrom /api/convert endpoint with HMAC-signed sf_url."""
+    cookies, ua = get_fastdl_cookies()
+    ts = int(time.time() * 1000)
+    sig = hmac.new(FASTDL_HMAC_KEY, (sf_url + str(ts)).encode(), hashlib.sha256).hexdigest()
+    form_data = f"sf_url={urllib.parse.quote(sf_url, safe='')}&ts={ts}&_ts={FASTDL_TS}&_tsc=0&_sv=2&_s={sig}"
+    resp = cf_requests.post(
+        f"{FASTDL_BASE}/api/convert",
+        data=form_data,
+        cookies=cookies,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Origin": "https://fastdl.app",
+            "Referer": "https://fastdl.app/",
+            "User-Agent": ua,
+        },
+        impersonate="chrome110",
+        timeout=30,
+    )
+    if not resp.ok:
+        _fastdl_cookies["fetched_at"] = 0
+        raise HTTPException(status_code=resp.status_code, detail=f"FastDL convert returned {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
+@app.post("/fastdl/convert")
+def fastdl_convert(req: ConvertReq):
+    return fastdl_savefrom(req.url)
+
 @app.post("/fastdl/userInfo")
 def fastdl_user_info(req: UserInfoReq):
     return fastdl_post("/api/v1/instagram/userInfo", {"username": req.username})
@@ -158,6 +193,33 @@ def sss_post(path, body_dict):
         raise HTTPException(status_code=resp.status_code, detail=f"SSSInstagram returned {resp.status_code}: {resp.text[:200]}")
     return resp.json()
 
+
+def sss_savefrom(sf_url: str):
+    """Call SSSInstagram's savefrom /api/convert endpoint with HMAC-signed sf_url."""
+    ts = int(time.time() * 1000)
+    sig = hmac.new(SSS_HMAC_KEY, (sf_url + str(ts)).encode(), hashlib.sha256).hexdigest()
+    form_data = f"sf_url={urllib.parse.quote(sf_url, safe='')}&ts={ts}&_ts={SSS_TS}&_tsc=0&_sv=2&_s={sig}"
+    resp = cf_requests.post(
+        f"{SSS_BASE}/api/convert",
+        data=form_data,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Origin": "https://sssinstagram.com",
+            "Referer": "https://sssinstagram.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        },
+        impersonate="chrome110",
+        timeout=30,
+    )
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=f"SSSInstagram convert returned {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
+@app.post("/sssinstagram/convert")
+def sss_convert(req: ConvertReq):
+    return sss_savefrom(req.url)
 
 @app.post("/sssinstagram/userInfo")
 def sss_user_info(req: UserInfoReq):
