@@ -4,13 +4,15 @@ Instagram provider proxy — FastAPI service
 FastDL (P1):        POST /fastdl/userInfo          {"username": "..."}
                     POST /fastdl/postsV2           {"username": "...", "maxId": ""}
                     POST /fastdl/convert           {"url": "..."} — savefrom video/reel download
+Shared:             GET  /audio/extract?url=...     — ffmpeg video-to-audio (replaces videodropper)
 GramSnap (P2):      POST /instagram/userInfo       {"username": "..."}
                     POST /instagram/postsV2        {"username": "...", "maxId": ""}
 SSSInstagram (P3):  POST /sssinstagram/userInfo    {"username": "..."}
                     POST /sssinstagram/postsV2     {"username": "...", "maxId": ""}
 """
-import hashlib, hmac, json, os, time, urllib.parse, urllib.request
+import hashlib, hmac, json, os, subprocess, tempfile, time, urllib.parse, urllib.request
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import curl_cffi.requests as cf_requests
@@ -228,6 +230,40 @@ def sss_user_info(req: UserInfoReq):
 @app.post("/sssinstagram/postsV2")
 def sss_posts_v2(req: PostsReq):
     return sss_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
+
+@app.get("/audio/extract")
+def audio_extract(url: str):
+    """Download video from URL, extract audio as MP3 via ffmpeg, stream back."""
+    with tempfile.TemporaryDirectory() as tmp:
+        video_path = os.path.join(tmp, "video.mp4")
+        audio_path = os.path.join(tmp, "audio.mp3")
+        # Download video
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp, open(video_path, "wb") as f:
+                while chunk := resp.read(65536):
+                    f.write(chunk)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to download video: {e}")
+        if os.path.getsize(video_path) == 0:
+            raise HTTPException(status_code=502, detail="Downloaded video is empty")
+        # Extract audio
+        result = subprocess.run(
+            ["ffmpeg", "-i", video_path, "-vn", "-acodec", "libmp3lame", "-ab", "128k", "-y", audio_path],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"ffmpeg failed: {result.stderr.decode()[:300]}")
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+            raise HTTPException(status_code=500, detail="Audio extraction produced empty file")
+        audio_bytes = open(audio_path, "rb").read()
+
+    return StreamingResponse(
+        iter([audio_bytes]),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": "attachment; filename=audio.mp3"},
+    )
+
 
 @app.get("/health")
 def health():
