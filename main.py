@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """
 Instagram provider proxy — FastAPI service
-FastDL (P1):        POST /fastdl/userInfo          {"username": "..."}
-                    POST /fastdl/postsV2           {"username": "...", "maxId": ""}
-                    POST /fastdl/convert           {"url": "..."} — savefrom video/reel download
-Shared:             GET  /audio/extract?url=...     — ffmpeg video-to-audio (replaces videodropper)
-GramSnap (P2):      POST /instagram/userInfo       {"username": "..."}
-                    POST /instagram/postsV2        {"username": "...", "maxId": ""}
-SSSInstagram (P3):  POST /sssinstagram/userInfo    {"username": "..."}
-                    POST /sssinstagram/postsV2     {"username": "...", "maxId": ""}
+Each provider exposes the same set of endpoints. Mount points:
+    /fastdl/<endpoint>
+    /instagram/<endpoint>      (GramSnap)
+    /sssinstagram/<endpoint>
+
+Provider-data endpoints:
+    POST userInfo            {"username": "..."}
+    POST profile             {"username": "..."}
+    POST postsV2             {"username": "...", "maxId": ""}
+    POST stories             {"username": "..."}
+    POST story               {"url": "https://www.instagram.com/stories/.../<id>"}
+    POST highlights          {"userId": "..."}                     # numeric IG user id
+    POST highlightStories    {"highlightId": "highlight:<id>"}
+    POST usernameSuggestions {"query": "..."}
+
+Video/audio utilities:
+    POST /fastdl/convert           {"url": "..."} — savefrom video/reel download
+    POST /sssinstagram/convert     {"url": "..."} — sss video download
+    GET  /audio/extract?url=...    — ffmpeg video-to-audio
 """
 import hashlib, hmac, json, os, subprocess, tempfile, time, urllib.parse, urllib.request
 from fastapi import FastAPI, HTTPException
@@ -95,6 +106,21 @@ class PostsReq(BaseModel):
     username: str
     maxId: Optional[str] = ""
 
+class StoriesReq(BaseModel):
+    username: str
+
+class StoryByUrlReq(BaseModel):
+    url: str
+
+class HighlightsReq(BaseModel):
+    userId: str
+
+class HighlightStoriesReq(BaseModel):
+    highlightId: str
+
+class SuggestionsReq(BaseModel):
+    query: str
+
 
 def fastdl_post(path, body_dict):
     cookies, ua = get_fastdl_cookies()
@@ -160,18 +186,66 @@ def fastdl_convert(req: ConvertReq):
 def fastdl_user_info(req: UserInfoReq):
     return fastdl_post("/api/v1/instagram/userInfo", {"username": req.username})
 
+@app.post("/fastdl/profile")
+def fastdl_profile(req: UserInfoReq):
+    return fastdl_post("/api/v1/instagram/profile", {"username": req.username})
+
 @app.post("/fastdl/postsV2")
 def fastdl_posts_v2(req: PostsReq):
     return fastdl_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
+
+@app.post("/fastdl/stories")
+def fastdl_stories(req: StoriesReq):
+    return fastdl_post("/api/v1/instagram/stories", {"username": req.username})
+
+@app.post("/fastdl/story")
+def fastdl_story(req: StoryByUrlReq):
+    return fastdl_post("/api/v1/instagram/story", {"url": req.url})
+
+@app.post("/fastdl/highlights")
+def fastdl_highlights(req: HighlightsReq):
+    return fastdl_post("/api/v1/instagram/highlights", {"userId": req.userId})
+
+@app.post("/fastdl/highlightStories")
+def fastdl_highlight_stories(req: HighlightStoriesReq):
+    return fastdl_post("/api/v1/instagram/highlightStories", {"highlightId": req.highlightId})
+
+@app.post("/fastdl/usernameSuggestions")
+def fastdl_username_suggestions(req: SuggestionsReq):
+    return fastdl_post("/api/v1/instagram/usernameSuggestions", {"query": req.query})
 
 
 @app.post("/instagram/userInfo")
 def user_info(req: UserInfoReq):
     return gramsnap_post("/api/v1/instagram/userInfo", {"username": req.username})
 
+@app.post("/instagram/profile")
+def gramsnap_profile(req: UserInfoReq):
+    return gramsnap_post("/api/v1/instagram/profile", {"username": req.username})
+
 @app.post("/instagram/postsV2")
 def posts_v2(req: PostsReq):
     return gramsnap_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
+
+@app.post("/instagram/stories")
+def gramsnap_stories(req: StoriesReq):
+    return gramsnap_post("/api/v1/instagram/stories", {"username": req.username})
+
+@app.post("/instagram/story")
+def gramsnap_story(req: StoryByUrlReq):
+    return gramsnap_post("/api/v1/instagram/story", {"url": req.url})
+
+@app.post("/instagram/highlights")
+def gramsnap_highlights(req: HighlightsReq):
+    return gramsnap_post("/api/v1/instagram/highlights", {"userId": req.userId})
+
+@app.post("/instagram/highlightStories")
+def gramsnap_highlight_stories(req: HighlightStoriesReq):
+    return gramsnap_post("/api/v1/instagram/highlightStories", {"highlightId": req.highlightId})
+
+@app.post("/instagram/usernameSuggestions")
+def gramsnap_username_suggestions(req: SuggestionsReq):
+    return gramsnap_post("/api/v1/instagram/usernameSuggestions", {"query": req.query})
 
 def sss_post(path, body_dict):
     sorted_body = sort_keys(body_dict)
@@ -227,9 +301,34 @@ def sss_convert(req: ConvertReq):
 def sss_user_info(req: UserInfoReq):
     return sss_post("/api/v1/instagram/userInfo", {"username": req.username})
 
+@app.post("/sssinstagram/profile")
+def sss_profile(req: UserInfoReq):
+    return sss_post("/api/v1/instagram/profile", {"username": req.username})
+
 @app.post("/sssinstagram/postsV2")
 def sss_posts_v2(req: PostsReq):
     return sss_post("/api/v1/instagram/postsV2", {"username": req.username, "maxId": req.maxId or ""})
+
+@app.post("/sssinstagram/stories")
+def sss_stories(req: StoriesReq):
+    return sss_post("/api/v1/instagram/stories", {"username": req.username})
+
+@app.post("/sssinstagram/story")
+def sss_story(req: StoryByUrlReq):
+    return sss_post("/api/v1/instagram/story", {"url": req.url})
+
+@app.post("/sssinstagram/highlights")
+def sss_highlights(req: HighlightsReq):
+    return sss_post("/api/v1/instagram/highlights", {"userId": req.userId})
+
+@app.post("/sssinstagram/highlightStories")
+def sss_highlight_stories(req: HighlightStoriesReq):
+    return sss_post("/api/v1/instagram/highlightStories", {"highlightId": req.highlightId})
+
+@app.post("/sssinstagram/usernameSuggestions")
+def sss_username_suggestions(req: SuggestionsReq):
+    return sss_post("/api/v1/instagram/usernameSuggestions", {"query": req.query})
+
 
 @app.get("/audio/extract")
 def audio_extract(url: str):
